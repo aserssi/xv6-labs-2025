@@ -60,6 +60,27 @@ main(int argc, char *argv[])
 void
 memdump(char *fmt, char *data)
 {
-  // Your code here.
+  char *p = data;
 
+  for(int i = 0; fmt[i]; i++){
+    if(fmt[i] == 'i'){
+      printf("%d\n", *(int*)p);
+      p += 4;
+    } else if(fmt[i] == 'h'){
+      printf("%d\n", *(short*)p);
+      p += 2;
+    } else if(fmt[i] == 'c'){
+      printf("%c\n", *p);
+      p += 1;
+    } else if(fmt[i] == 's'){
+      printf("%s\n", *(char**)p);
+      p += 8;
+    } else if(fmt[i] == 'S'){
+      printf("%s\n", p);
+      break;
+    } else if(fmt[i] == 'p'){
+      printf("%x\n", *(uint*)p);
+      p += 8;
+    }
+  }
 }
