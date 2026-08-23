@@ -1,0 +1,1 @@
+This lab implements interpose to restrict selected system calls using a syscall mask and a path exception. The sandbox state is stored in struct proc and inherited by fork.
