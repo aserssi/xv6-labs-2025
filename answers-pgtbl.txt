@@ -1,0 +1,1 @@
+USYSCALL maps a read-only user page containing the process id so ugetpid can read it without entering the kernel.

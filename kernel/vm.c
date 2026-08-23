@@ -140,15 +140,37 @@ walkaddr(pagetable_t pagetable, uint64 va)
   return pa;
 }
 
-
 #if defined(LAB_PGTBL) || defined(SOL_MMAP) || defined(SOL_COW)
+
 void
-vmprint(pagetable_t pagetable) {
-  // your code here
+vmprintwalk(pagetable_t pagetable, int level, uint64 va)
+{
+  for(int i = 0; i < 512; i++){
+    pte_t pte = pagetable[i];
+    if((pte & PTE_V) == 0)
+      continue;
+
+    uint64 childva = va | ((uint64)i << PXSHIFT(level));
+
+    for(int j = 0; j < 3 - level; j++)
+      printf(" ..");
+
+printf("%p\n", (void*)childva);
+    if(level > 0 && (pte & (PTE_R | PTE_W | PTE_X)) == 0){
+      uint64 child = PTE2PA(pte);
+      vmprintwalk((pagetable_t)child, level - 1, childva);
+    }
+  }
 }
+
+void
+vmprint(pagetable_t pagetable)
+{
+  printf("page table %p\n", pagetable);
+  vmprintwalk(pagetable, 2, 0);
+}
+
 #endif
-
-
 
 // add a mapping to the kernel page table.
 // only used when booting.

@@ -107,12 +107,11 @@ sys_pgpte(void)
 #endif
 
 #ifdef LAB_PGTBL
-int
+extern pagetable_t kernel_pagetable;
+uint64
 sys_kpgtbl(void)
 {
-  struct proc *p;  
-
-  p = myproc();
+  struct proc *p = myproc();
   vmprint(p->pagetable);
   return 0;
 }
