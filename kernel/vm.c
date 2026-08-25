@@ -294,35 +294,90 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
+cowalloc(pagetable_t pagetable, uint64 va)
+{
+  pte_t *pte;
+  uint64 pa;
+  uint flags;
+  char *mem;
+
+  if(va >= MAXVA)
+    return -1;
+
+  va = PGROUNDDOWN(va);
+  pte = walk(pagetable, va, 0);
+
+  if(pte == 0 ||
+     (*pte & PTE_V) == 0 ||
+     (*pte & PTE_U) == 0 ||
+     (*pte & PTE_COW) == 0)
+    return -1;
+
+  pa = PTE2PA(*pte);
+
+  // 只有当前进程使用这个物理页时，无须实际复制。
+  if(krefcnt((void *)pa) == 1){
+    *pte = (*pte | PTE_W) & ~PTE_COW;
+    sfence_vma();
+    return 0;
+  }
+
+  mem = kalloc();
+  if(mem == 0)
+    return -1;
+
+  memmove(mem, (void *)pa, PGSIZE);
+
+  flags = PTE_FLAGS(*pte);
+  flags = (flags | PTE_W) & ~PTE_COW;
+
+  *pte = PA2PTE((uint64)mem) | flags;
+  sfence_vma();
+
+  // 释放当前进程对旧物理页的引用。
+  kfree((void *)pa);
+
+  return 0;
+}
+
+int
 uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
-  char *mem;
 
   for(i = 0; i < sz; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
-      continue;   // page table entry hasn't been allocated
+      continue;
+
     if((*pte & PTE_V) == 0)
-      continue;   // physical page hasn't been allocated
+      continue;
+
     pa = PTE2PA(*pte);
-    flags = PTE_FLAGS(*pte);
-    if((mem = kalloc()) == 0)
-      goto err;
-    memmove(mem, (char*)pa, PGSIZE);
-    if(mappages(new, i, PGSIZE, (uint64)mem, flags) != 0){
-      kfree(mem);
-      goto err;
+
+    // 原来可写的页面改为COW，并清除写权限。
+    if(*pte & PTE_W){
+      *pte = (*pte & ~PTE_W) | PTE_COW;
     }
+
+    flags = PTE_FLAGS(*pte);
+
+    // 父子进程映射同一个物理页。
+    if(mappages(new, i, PGSIZE, pa, flags) != 0)
+      goto err;
+
+    krefinc((void *)pa);
   }
+
+  sfence_vma();
   return 0;
 
- err:
+err:
+  sfence_vma();
   uvmunmap(new, 0, i / PGSIZE, 1);
   return -1;
 }
-
 // mark a PTE invalid for user access.
 // used by exec for the user stack guard page.
 void
@@ -347,33 +402,46 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
 
   while(len > 0){
     va0 = PGROUNDDOWN(dstva);
+
     if(va0 >= MAXVA)
       return -1;
-  
-    pa0 = walkaddr(pagetable, va0);
-    if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+
+    pte = walk(pagetable, va0, 0);
+
+    // 内核写入用户COW页时不会产生用户态页错误，
+    // 因此必须在这里主动完成复制。
+    if(pte != 0 &&
+       (*pte & PTE_V) &&
+       (*pte & PTE_COW)){
+      if(cowalloc(pagetable, va0) < 0)
         return -1;
-      }
+    }
+
+    pa0 = walkaddr(pagetable, va0);
+
+    if(pa0 == 0){
+      if((pa0 = vmfault(pagetable, va0, 0)) == 0)
+        return -1;
     }
 
     pte = walk(pagetable, va0, 0);
-    // forbid copyout over read-only user text pages.
-    if((*pte & PTE_W) == 0)
+
+    if(pte == 0 || (*pte & PTE_W) == 0)
       return -1;
-      
+
     n = PGSIZE - (dstva - va0);
     if(n > len)
       n = len;
+
     memmove((void *)(pa0 + (dstva - va0)), src, n);
 
     len -= n;
     src += n;
     dstva = va0 + PGSIZE;
   }
+
   return 0;
 }
-
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
