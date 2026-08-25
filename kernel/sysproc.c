@@ -69,6 +69,7 @@ sys_pause(void)
   uint ticks0;
 
   argint(0, &n);
+backtrace();
   if(n < 0)
     n = 0;
   acquire(&tickslock);
@@ -104,4 +105,35 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64
+sys_sigalarm(void)
+{
+  int interval;
+  uint64 handler;
+  struct proc *p = myproc();
+
+  argint(0, &interval);
+  argaddr(1, &handler);
+
+  p->alarm_interval = interval;
+  p->alarm_handler = handler;
+  p->alarm_ticks = 0;
+
+  return 0;
+}
+
+uint64
+sys_sigreturn(void)
+{
+  struct proc *p = myproc();
+  uint64 saved_a0 = p->alarm_trapframe.a0;
+
+  *(p->trapframe) = p->alarm_trapframe;
+  p->alarm_active = 0;
+  p->alarm_ticks = 0;
+
+  // syscall() 会把返回值写入 a0，因此必须返回原来的 a0。
+  return saved_a0;
 }

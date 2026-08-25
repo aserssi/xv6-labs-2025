@@ -81,9 +81,24 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if(which_dev == 2)
-    yield();
+if(which_dev == 2){
+  if(p->alarm_interval > 0 && !p->alarm_active){
+    p->alarm_ticks++;
 
+    if(p->alarm_ticks >= p->alarm_interval){
+      p->alarm_ticks = 0;
+      p->alarm_active = 1;
+
+      // 保存中断发生前的全部用户寄存器。
+      p->alarm_trapframe = *(p->trapframe);
+
+      // 返回用户态时跳到报警处理函数。
+      p->trapframe->epc = p->alarm_handler;
+    }
+  }
+
+  yield();
+}
   prepare_return();
 
   // the user page table to switch to, for trampoline.S
