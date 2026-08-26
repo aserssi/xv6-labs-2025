@@ -408,6 +408,7 @@ bmap(struct inode *ip, uint bn)
   uint addr, *a;
   struct buf *bp;
 
+  // 直接块。
   if(bn < NDIRECT){
     if((addr = ip->addrs[bn]) == 0){
       addr = balloc(ip->dev);
@@ -419,16 +420,18 @@ bmap(struct inode *ip, uint bn)
   }
   bn -= NDIRECT;
 
+  // 一级间接块。
   if(bn < NINDIRECT){
-    // Load indirect block, allocating if necessary.
     if((addr = ip->addrs[NDIRECT]) == 0){
       addr = balloc(ip->dev);
       if(addr == 0)
         return 0;
       ip->addrs[NDIRECT] = addr;
     }
+
     bp = bread(ip->dev, addr);
     a = (uint*)bp->data;
+
     if((addr = a[bn]) == 0){
       addr = balloc(ip->dev);
       if(addr){
@@ -436,22 +439,70 @@ bmap(struct inode *ip, uint bn)
         log_write(bp);
       }
     }
+
+    brelse(bp);
+    return addr;
+  }
+  bn -= NINDIRECT;
+
+  // 二级间接块。
+  if(bn < NDINDIRECT){
+    if((addr = ip->addrs[NDIRECT + 1]) == 0){
+      addr = balloc(ip->dev);
+      if(addr == 0)
+        return 0;
+      ip->addrs[NDIRECT + 1] = addr;
+    }
+
+    // 读取第一级索引块。
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    uint first = bn / NINDIRECT;
+
+    if((addr = a[first]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[first] = addr;
+        log_write(bp);
+      }
+    }
+
+    brelse(bp);
+
+    if(addr == 0)
+      return 0;
+
+    // 读取第二级索引块。
+    bp = bread(ip->dev, addr);
+    a = (uint*)bp->data;
+
+    uint second = bn % NINDIRECT;
+
+    if((addr = a[second]) == 0){
+      addr = balloc(ip->dev);
+      if(addr){
+        a[second] = addr;
+        log_write(bp);
+      }
+    }
+
     brelse(bp);
     return addr;
   }
 
   panic("bmap: out of range");
 }
-
 // Truncate inode (discard contents).
 // Caller must hold ip->lock.
 void
 itrunc(struct inode *ip)
 {
   int i, j;
-  struct buf *bp;
-  uint *a;
+  struct buf *bp, *bp2;
+  uint *a, *a2;
 
+  // 释放直接块。
   for(i = 0; i < NDIRECT; i++){
     if(ip->addrs[i]){
       bfree(ip->dev, ip->addrs[i]);
@@ -459,22 +510,49 @@ itrunc(struct inode *ip)
     }
   }
 
+  // 释放一级间接块。
   if(ip->addrs[NDIRECT]){
     bp = bread(ip->dev, ip->addrs[NDIRECT]);
     a = (uint*)bp->data;
+
     for(j = 0; j < NINDIRECT; j++){
       if(a[j])
         bfree(ip->dev, a[j]);
     }
+
     brelse(bp);
     bfree(ip->dev, ip->addrs[NDIRECT]);
     ip->addrs[NDIRECT] = 0;
   }
 
+  // 释放二级间接块。
+  if(ip->addrs[NDIRECT + 1]){
+    bp = bread(ip->dev, ip->addrs[NDIRECT + 1]);
+    a = (uint*)bp->data;
+
+    for(i = 0; i < NINDIRECT; i++){
+      if(a[i]){
+        bp2 = bread(ip->dev, a[i]);
+        a2 = (uint*)bp2->data;
+
+        for(j = 0; j < NINDIRECT; j++){
+          if(a2[j])
+            bfree(ip->dev, a2[j]);
+        }
+
+        brelse(bp2);
+        bfree(ip->dev, a[i]);
+      }
+    }
+
+    brelse(bp);
+    bfree(ip->dev, ip->addrs[NDIRECT + 1]);
+    ip->addrs[NDIRECT + 1] = 0;
+  }
+
   ip->size = 0;
   iupdate(ip);
 }
-
 // Copy stat information from inode.
 // Caller must hold ip->lock.
 void
