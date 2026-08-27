@@ -6,6 +6,7 @@
 
 #include "types.h"
 #include "riscv.h"
+#include "memlayout.h"
 #include "defs.h"
 #include "param.h"
 #include "stat.h"
@@ -502,4 +503,261 @@ sys_pipe(void)
     return -1;
   }
   return 0;
+}
+uint64
+mmapfault(uint64 va, int scause)
+{
+  struct proc *p = myproc();
+  struct vma *v = 0;
+
+  // 找到发生缺页的地址所属的 VMA。
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used &&
+       va >= p->vmas[i].addr &&
+       va < p->vmas[i].addr + p->vmas[i].length){
+      v = &p->vmas[i];
+      break;
+    }
+  }
+
+  if(v == 0)
+    return 0;
+  // 12：取指缺页；13：读缺页；15：写缺页。
+  if(scause == 12 && (v->prot & PROT_EXEC) == 0)
+    return 0;
+  if(scause == 13 && (v->prot & PROT_READ) == 0)
+    return 0;
+  if(scause == 15 && (v->prot & PROT_WRITE) == 0)
+    return 0;
+
+  uint64 pageva = PGROUNDDOWN(va);
+
+  // 如果页面已经存在，说明这是权限错误，不能重新映射。
+  pte_t *pte = walk(p->pagetable, pageva, 0);
+  if(pte != 0 && (*pte & PTE_V))
+    return 0;
+
+  char *mem = kalloc();
+  if(mem == 0)
+    return 0;
+
+  memset(mem, 0, PGSIZE);
+
+  uint64 fileoff = v->offset + (pageva - v->addr);
+
+  ilock(v->file->ip);
+  int n = readi(v->file->ip, 0, (uint64)mem, fileoff, PGSIZE);
+  iunlock(v->file->ip);
+
+  if(n < 0){
+    kfree(mem);
+    return 0;
+  }
+
+  int perm = PTE_U;
+
+  if(v->prot & PROT_READ)
+    perm |= PTE_R;
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_R | PTE_W;
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if(mappages(p->pagetable, pageva, PGSIZE,
+              (uint64)mem, perm) != 0){
+    kfree(mem);
+    return 0;
+  }
+
+  return (uint64)mem;
+}
+
+uint64
+sys_mmap(void)
+{
+  uint64 hint, length, offset;
+  int prot, flags, fd;
+  struct file *f;
+  struct proc *p = myproc();
+  int slot = -1;
+
+  argaddr(0, &hint);
+  argaddr(1, &length);
+  argint(2, &prot);
+  argint(3, &flags);
+  argint(4, &fd);
+  argaddr(5, &offset);
+
+  if(hint != 0 || length == 0)
+    return -1;
+
+  if((prot & ~(PROT_READ | PROT_WRITE | PROT_EXEC)) != 0)
+    return -1;
+
+  if(flags != MAP_SHARED && flags != MAP_PRIVATE)
+    return -1;
+
+  if(offset % PGSIZE != 0)
+    return -1;
+
+  if(argfd(4, &fd, &f) < 0 || f->type != FD_INODE)
+    return -1;
+
+  // 文件内容必须可读。
+  if(f->readable == 0)
+    return -1;
+
+  // 共享可写映射要求文件本身以可写方式打开。
+  if((flags == MAP_SHARED) &&
+     (prot & PROT_WRITE) &&
+     f->writable == 0)
+    return -1;
+
+  uint64 addr = PGROUNDUP(p->sz);
+
+  // 找空闲 VMA，并把新映射放在现有映射之后。
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      uint64 end = PGROUNDUP(p->vmas[i].addr +
+                             p->vmas[i].length);
+      if(end > addr)
+        addr = end;
+    } else if(slot == -1){
+      slot = i;
+    }
+  }
+
+  if(slot == -1)
+    return -1;
+
+  length = PGROUNDUP(length);
+
+  if(addr + length < addr || addr + length >= TRAPFRAME)
+    return -1;
+
+  struct vma *v = &p->vmas[slot];
+  v->used = 1;
+  v->addr = addr;
+  v->length = length;
+  v->prot = prot;
+  v->flags = flags;
+  v->offset = offset;
+  v->file = filedup(f);
+
+  // 此处不分配物理页，真正访问时再缺页加载。
+  return addr;
+}
+
+static int
+vma_unmap_pages(struct proc *p, struct vma *v,
+                uint64 addr, uint64 length)
+{
+  int failed = 0;
+  uint64 end = addr + length;
+
+  for(uint64 a = addr; a < end; a += PGSIZE){
+    pte_t *pte = walk(p->pagetable, a, 0);
+
+    // 尚未发生缺页的页面不需要释放。
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      continue;
+
+    // MAP_SHARED 的可写页面写回原文件。
+    if(v->flags == MAP_SHARED &&
+       (v->prot & PROT_WRITE)){
+      uint64 pa = PTE2PA(*pte);
+      uint64 fileoff = v->offset + (a - v->addr);
+      struct inode *ip = v->file->ip;
+
+      begin_op();
+      ilock(ip);
+
+      if(fileoff < ip->size){
+        uint n = ip->size - fileoff;
+        if(n > PGSIZE)
+          n = PGSIZE;
+
+        if(writei(ip, 0, pa, fileoff, n) != n)
+          failed = -1;
+      }
+
+      iunlock(ip);
+      end_op();
+    }
+
+    uvmunmap(p->pagetable, a, 1, 1);
+  }
+
+  return failed;
+}
+
+uint64
+sys_munmap(void)
+{
+  uint64 addr, length;
+  struct proc *p = myproc();
+
+  argaddr(0, &addr);
+  argaddr(1, &length);
+
+  if(length == 0 || addr % PGSIZE != 0)
+    return -1;
+
+  length = PGROUNDUP(length);
+
+  if(addr + length < addr)
+    return -1;
+
+  uint64 end = addr + length;
+
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+
+    if(!v->used)
+      continue;
+
+    uint64 vend = v->addr + v->length;
+
+    // 要解除的范围必须完整位于同一个 VMA 中。
+    if(addr < v->addr || end > vend)
+      continue;
+
+    // 本实验只要求从头、从尾或整个 VMA 解除映射。
+    if(addr != v->addr && end != vend)
+      return -1;
+
+    int result = vma_unmap_pages(p, v, addr, length);
+
+    if(addr == v->addr && end == vend){
+      fileclose(v->file);
+      memset(v, 0, sizeof(*v));
+    } else if(addr == v->addr){
+      // 删除 VMA 前部。
+      v->addr += length;
+      v->length -= length;
+      v->offset += length;
+    } else {
+      // 删除 VMA 尾部。
+      v->length = addr - v->addr;
+    }
+
+    return result < 0 ? -1 : 0;
+  }
+
+  return -1;
+}
+
+void
+vmacleanup(struct proc *p)
+{
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+
+    if(!v->used)
+      continue;
+
+    vma_unmap_pages(p, v, v->addr, v->length);
+    fileclose(v->file);
+    memset(v, 0, sizeof(*v));
+  }
 }

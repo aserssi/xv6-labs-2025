@@ -124,7 +124,7 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
-
+  memset(p->vmas, 0, sizeof(p->vmas));
   // Allocate a trapframe page.
   if((p->trapframe = (struct trapframe *)kalloc()) == 0){
     freeproc(p);
@@ -272,7 +272,14 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
-
+  // 子进程继承父进程的 VMA。
+  // 映射页面本身仍在首次访问时通过缺页加载。
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      np->vmas[i] = p->vmas[i];
+      np->vmas[i].file = filedup(p->vmas[i].file);
+    }
+  }
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
 
@@ -327,7 +334,8 @@ kexit(int status)
 
   if(p == initproc)
     panic("init exiting");
-
+  // 解除所有仍存在的 mmap 映射并释放文件引用。
+  vmacleanup(p);
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){
     if(p->ofile[fd]){

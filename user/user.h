@@ -27,6 +27,8 @@ int chdir(const char*);
 int dup(int);
 int getpid(void);
 char* sys_sbrk(int,int);
+void* mmap(void*, size_t, int, int, int, off_t);
+int munmap(void*, size_t);
 int pause(int);
 int uptime(void);
 #ifdef LAB_NET
