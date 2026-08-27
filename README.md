@@ -10,15 +10,15 @@
 
 | 实验 | 分支 | 主要内容 | 测试成绩 | 状态 |
 | --- | --- | --- | ---: | :---: |
-| Utilities | [`util`](https://github.com/aserssi/xv6-labs-2025/tree/util) | `sleep`、`sixfive`、`memdump`、`find`、`exec` 等用户程序 | 131 / 131 | ✅ |
-| System Calls | [`syscall`](https://github.com/aserssi/xv6-labs-2025/tree/syscall) | 系统调用接口、参数传递、sandbox 与攻击测试 | 45 / 45 | ✅ |
-| Page Tables | [`pgtbl`](https://github.com/aserssi/xv6-labs-2025/tree/pgtbl) | `ugetpid`、页表打印与 superpage | 41 / 41 | ✅ |
-| Traps | [`traps`](https://github.com/aserssi/xv6-labs-2025/tree/traps) | RISC-V 汇编、backtrace、用户级 alarm | 95 / 95 | ✅ |
-| Copy-on-Write | [`cow`](https://github.com/aserssi/xv6-labs-2025/tree/cow) | COW fork、页引用计数与写时复制缺页处理 | 130 / 130 | ✅ |
-| Locks | [`lock`](https://github.com/aserssi/xv6-labs-2025/tree/lock) | 并发内存分配、锁竞争优化与读写锁 | 100 / 100 | ✅ |
-| File System | [`fs`](https://github.com/aserssi/xv6-labs-2025/tree/fs) | 大文件、双重间接块与符号链接 | 100 / 100 | ✅ |
-| mmap | [`mmap`](https://github.com/aserssi/xv6-labs-2025/tree/mmap) | 文件内存映射、延迟分配、`munmap` 与 fork | 170 / 170 | ✅ |
-| Networking | [`net`](https://github.com/aserssi/xv6-labs-2025/tree/net) | E1000 网卡驱动、ARP、IP、UDP 与 DNS | 171 / 171 | ✅ |
+| Utilities | [`util`](https://github.com/aserssi/xv6-labs-2025/tree/util) | `sleep`、`sixfive`、`memdump`、`find`、`exec` 等用户程序 | 131 / 131 | 已完成 |
+| System Calls | [`syscall`](https://github.com/aserssi/xv6-labs-2025/tree/syscall) | 系统调用接口、参数传递、sandbox 与攻击测试 | 45 / 45 | 已完成 |
+| Page Tables | [`pgtbl`](https://github.com/aserssi/xv6-labs-2025/tree/pgtbl) | `ugetpid`、页表打印与 superpage | 41 / 41 | 已完成 |
+| Traps | [`traps`](https://github.com/aserssi/xv6-labs-2025/tree/traps) | RISC-V 汇编、backtrace、用户级 alarm | 95 / 95 | 已完成 |
+| Copy-on-Write | [`cow`](https://github.com/aserssi/xv6-labs-2025/tree/cow) | COW fork、页引用计数与写时复制缺页处理 | 130 / 130 | 已完成 |
+| Locks | [`lock`](https://github.com/aserssi/xv6-labs-2025/tree/lock) | 并发内存分配、锁竞争优化与读写锁 | 100 / 100 | 已完成 |
+| File System | [`fs`](https://github.com/aserssi/xv6-labs-2025/tree/fs) | 大文件、双重间接块与符号链接 | 100 / 100 | 已完成 |
+| mmap | [`mmap`](https://github.com/aserssi/xv6-labs-2025/tree/mmap) | 文件内存映射、延迟分配、`munmap` 与 fork | 170 / 170 | 已完成 |
+| Networking | [`net`](https://github.com/aserssi/xv6-labs-2025/tree/net) | E1000 网卡驱动、ARP、IP、UDP 与 DNS | 171 / 171 | 已完成 |
 
 ## 实验环境
 
