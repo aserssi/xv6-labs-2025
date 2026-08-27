@@ -93,32 +93,82 @@ e1000_init(uint32 *xregs)
 int
 e1000_transmit(char *buf, int len)
 {
-  //
-  // Your code here.
-  //
-  // buf contains an ethernet frame; program it into
-  // the TX descriptor ring so that the e1000 sends it. Stash
-  // a pointer so that it can be freed after send completes.
-  //
-  // return 0 on success.
-  // return -1 on failure (e.g., there is no descriptor available)
-  // so that the caller knows to free buf.
-  //
+  acquire(&e1000_lock);
 
-  
+  uint32 index = regs[E1000_TDT];
+  struct tx_desc *desc = &tx_ring[index];
+
+  // DD 没有置位，说明描述符仍由网卡使用。
+  if((desc->status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1;
+  }
+
+  // 网卡已经发送完上一次的数据，可以释放旧缓冲区。
+  if(desc->addr != 0)
+    kfree((void *)desc->addr);
+
+  desc->addr = (uint64)buf;
+  desc->length = len;
+  desc->cso = 0;
+  desc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  desc->status = 0;
+  desc->css = 0;
+  desc->special = 0;
+
+  __sync_synchronize();
+
+  // 通知网卡：这个描述符已经可以发送。
+  regs[E1000_TDT] = (index + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
 static void
 e1000_recv(void)
 {
-  //
-  // Your code here.
-  //
-  // Check for packets that have arrived from the e1000
-  // Create and deliver a buf for each packet (using net_rx()).
-  //
+  acquire(&e1000_lock);
 
+  while(1){
+    uint32 index = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    struct rx_desc *desc = &rx_ring[index];
+
+    // DD 没置位，说明后面暂时没有新数据包。
+    if((desc->status & E1000_RXD_STAT_DD) == 0)
+      break;
+
+    char *oldbuf = (char *)desc->addr;
+    int len = desc->length;
+
+    // 每接收一个包，都必须给网卡准备新的接收缓冲区。
+    char *newbuf = kalloc();
+    if(newbuf == 0){
+      // 内存不足时丢弃该包，并继续复用原缓冲区。
+      desc->status = 0;
+      desc->length = 0;
+      regs[E1000_RDT] = index;
+      continue;
+    }
+
+    desc->addr = (uint64)newbuf;
+    desc->status = 0;
+    desc->length = 0;
+    desc->errors = 0;
+
+    __sync_synchronize();
+
+    // 把此描述符重新交还给网卡。
+    regs[E1000_RDT] = index;
+
+    // net_rx() 可能发送 ARP 回复并再次取得 e1000_lock，
+    // 因此调用它时不能持有这个锁。
+    release(&e1000_lock);
+    net_rx(oldbuf, len);
+    acquire(&e1000_lock);
+  }
+
+  release(&e1000_lock);
 }
 
 void

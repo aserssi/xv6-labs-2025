@@ -18,7 +18,26 @@ static uint32 local_ip = MAKE_IP_ADDR(10, 0, 2, 15);
 static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
+#define NBOUNDPORT 16
+#define UDP_QUEUE_SIZE 16
 
+struct udp_packet {
+  char *buf;
+  int len;
+  uint32 src;
+  uint16 sport;
+};
+
+struct udp_port {
+  int used;
+  uint16 port;
+  int head;
+  int tail;
+  int count;
+  struct udp_packet packets[UDP_QUEUE_SIZE];
+};
+
+static struct udp_port udp_ports[NBOUNDPORT];
 void
 netinit(void)
 {
@@ -34,13 +53,36 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
+  argint(0, &port);
 
+  if(port < 0 || port > 65535)
+    return -1;
+
+  acquire(&netlock);
+
+  // 同一个端口不能重复绑定。
+  for(int i = 0; i < NBOUNDPORT; i++){
+    if(udp_ports[i].used && udp_ports[i].port == port){
+      release(&netlock);
+      return -1;
+    }
+  }
+
+  // 找一个空闲端口队列。
+  for(int i = 0; i < NBOUNDPORT; i++){
+    if(!udp_ports[i].used){
+      memset(&udp_ports[i], 0, sizeof(udp_ports[i]));
+      udp_ports[i].used = 1;
+      udp_ports[i].port = port;
+      release(&netlock);
+      return 0;
+    }
+  }
+
+  release(&netlock);
   return -1;
 }
-
 //
 // unbind(int port)
 // release any resources previously created by bind(port);
@@ -74,12 +116,85 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
-}
+  int dport;
+  uint64 srcaddr;
+  uint64 sportaddr;
+  uint64 bufaddr;
+  int maxlen;
+  struct proc *p = myproc();
 
+  argint(0, &dport);
+  argaddr(1, &srcaddr);
+  argaddr(2, &sportaddr);
+  argaddr(3, &bufaddr);
+  argint(4, &maxlen);
+
+  if(dport < 0 || dport > 65535 || maxlen < 0)
+    return -1;
+
+  acquire(&netlock);
+
+  struct udp_port *q = 0;
+
+  for(int i = 0; i < NBOUNDPORT; i++){
+    if(udp_ports[i].used && udp_ports[i].port == dport){
+      q = &udp_ports[i];
+      break;
+    }
+  }
+
+  if(q == 0){
+    release(&netlock);
+    return -1;
+  }
+
+  // 没有数据包时睡眠，ip_rx() 收到包后会唤醒这里。
+  while(q->count == 0){
+    if(killed(p)){
+      release(&netlock);
+      return -1;
+    }
+    sleep(q, &netlock);
+  }
+
+  struct udp_packet pkt = q->packets[q->head];
+  memset(&q->packets[q->head], 0,
+         sizeof(q->packets[q->head]));
+
+  q->head = (q->head + 1) % UDP_QUEUE_SIZE;
+  q->count--;
+
+  release(&netlock);
+
+  int n = pkt.len;
+  if(n > maxlen)
+    n = maxlen;
+
+  char *payload = pkt.buf +
+                  sizeof(struct eth) +
+                  sizeof(struct ip) +
+                  sizeof(struct udp);
+
+  int failed = 0;
+
+  if(copyout(p->pagetable, srcaddr,
+             (char *)&pkt.src, sizeof(pkt.src)) < 0)
+    failed = 1;
+
+  if(copyout(p->pagetable, sportaddr,
+             (char *)&pkt.sport, sizeof(pkt.sport)) < 0)
+    failed = 1;
+
+  if(copyout(p->pagetable, bufaddr, payload, n) < 0)
+    failed = 1;
+
+  kfree(pkt.buf);
+
+  if(failed)
+    return -1;
+
+  return n;
+}
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
 // of the University of California.
 static unsigned short
@@ -188,12 +303,80 @@ ip_rx(char *buf, int len)
     printf("ip_rx: received an IP packet\n");
   seen_ip = 1;
 
-  //
-  // Your code here.
-  //
-  
-}
+  int headers = sizeof(struct eth) +
+                sizeof(struct ip) +
+                sizeof(struct udp);
 
+  if(len < headers){
+    kfree(buf);
+    return;
+  }
+
+  struct eth *eth = (struct eth *)buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+
+  // 只处理 IPv4、固定 20 字节 IP 头和 UDP。
+  if((ip->ip_vhl >> 4) != 4 ||
+     (ip->ip_vhl & 0x0f) != 5 ||
+     ip->ip_p != IPPROTO_UDP){
+    kfree(buf);
+    return;
+  }
+
+  int iplen = ntohs(ip->ip_len);
+
+  if(iplen < (int)(sizeof(struct ip) + sizeof(struct udp)) ||
+     iplen > len - (int)sizeof(struct eth)){
+    kfree(buf);
+    return;
+  }
+
+  struct udp *udp = (struct udp *)(ip + 1);
+  int udplen = ntohs(udp->ulen);
+
+  if(udplen < (int)sizeof(struct udp) ||
+     udplen > iplen - (int)sizeof(struct ip)){
+    kfree(buf);
+    return;
+  }
+
+  uint16 dport = ntohs(udp->dport);
+  uint16 sport = ntohs(udp->sport);
+  uint32 src = ntohl(ip->ip_src);
+  int payload_len = udplen - sizeof(struct udp);
+
+  acquire(&netlock);
+
+  struct udp_port *q = 0;
+
+  for(int i = 0; i < NBOUNDPORT; i++){
+    if(udp_ports[i].used && udp_ports[i].port == dport){
+      q = &udp_ports[i];
+      break;
+    }
+  }
+
+  // 未绑定端口，或者该端口已有 16 个包：丢弃。
+  if(q == 0 || q->count >= UDP_QUEUE_SIZE){
+    release(&netlock);
+    kfree(buf);
+    return;
+  }
+
+  struct udp_packet *pkt = &q->packets[q->tail];
+  pkt->buf = buf;
+  pkt->len = payload_len;
+  pkt->src = src;
+  pkt->sport = sport;
+
+  q->tail = (q->tail + 1) % UDP_QUEUE_SIZE;
+  q->count++;
+
+  // 唤醒正在该端口等待的 recv()。
+  wakeup(q);
+
+  release(&netlock);
+}
 //
 // send an ARP reply packet to tell qemu to map
 // xv6's ip address to its ethernet address.
